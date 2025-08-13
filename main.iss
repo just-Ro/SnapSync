@@ -19,27 +19,27 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
-OutputDir=C:\Users\Ro\Documents\Trabalhos\Programming\Python\Programas\snapsync\compiler_output
-OutputBaseFilename=installer
-SetupIconFile=C:\Users\Ro\Documents\Trabalhos\Programming\Python\Programas\snapsync\icon.ico
+OutputDir=.
+OutputBaseFilename=snapsync_installer
+SetupIconFile=icon.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 ChangesEnvironment=yes
 
-[CustomMessages]
-AddToPath=Add it to PATH environment variable
+; [CustomMessages]
+; AddToPath=Add it to PATH environment variable
 
-[Tasks]
-Name: envPath; Description: "{cm:AddToPath}"
+; [Tasks]
+; Name: envPath; Description: "{cm:AddToPath}"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "C:\Users\Ro\Documents\Trabalhos\Programming\Python\Programas\snapsync\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\Ro\Documents\Trabalhos\Programming\Python\Programas\snapsync\exiftool.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\Ro\Documents\Trabalhos\Programming\Python\Programas\snapsync\exiftool_files\*"; DestDir: "{app}\exiftool_files"; Flags: ignoreversion
+Source: "{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "exiftool.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "exiftool_files\*"; DestDir: "{app}\exiftool_files"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"; Comment: "Uninstalls {#MyAppName}"
@@ -55,7 +55,7 @@ Root: HKCR; Subkey: "Directory\Background\shell\{#MyAppName}\command"; ValueType
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-    if (CurStep = ssPostInstall) and WizardIsTaskSelected('envPath') then
+    if (CurStep = ssPostInstall) then
         EnvAddPath(ExpandConstant('{app}'));
 end;
 

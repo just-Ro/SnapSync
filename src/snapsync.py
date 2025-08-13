@@ -3,7 +3,7 @@ import os
 import re
 import sys
 import mimetypes
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 from PIL.ExifTags import TAGS
 import threading
@@ -14,65 +14,81 @@ import ctypes
 myappid = "ro.snapsync"  # arbitrary string
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
-DATE_PATTERNS = [
-    r"(\d{4})[-_:.\\](\d{2})[-_:.\\](\d{2})[ T_:.\\](\d{2})[-_:.\\](\d{2})[-_:.\\](\d{2})",    # YYYY-MM-DD HH-MM-SS
-    r"(\d{2})[-_:.\\](\d{2})[-_:.\\](\d{4})[ T_:.\\](\d{2})[-_:.\\](\d{2})[-_:.\\](\d{2})",    # DD-MM-YYYY HH-MM-SS
-    r"(\d{8})[ T_:.\\](\d{6})",                                                        # YYYYMMDD HHMMSS
-    r"(\d{14})",                                                                     # YYYYMMDDHHMMSS
-    r"(\d{4})(\d{2})(\d{2})[-_:.\\]?(\d{2})(\d{2})(\d{2})",                             # YYYYMMDD-HHMMSS or YYYYMMDDHHMMSS no separator
-]
-
 DATE_ONLY_PATTERNS = [
     r"(\d{4})[-_:.\\](\d{2})[-_:.\\](\d{2})",  # YYYY-MM-DD
     r"(\d{2})[-_:.\\](\d{2})[-_:.\\](\d{4})",  # DD-MM-YYYY
-    r"(\d{8})",                            # YYYYMMDD
-    r"(\d{4})(\d{2})(\d{2})",             # YYYYMMDD no separator
+    r"(\d{8})",                                # YYYYMMDD
+    r"(\d{4})(\d{2})(\d{2})",                  # YYYYMMDD no separator
 ]
 
 TIME_PATTERNS = [
     r"(\d{2})[-_:.\\](\d{2})[-_:.\\](\d{2})",  # HH-MM-SS
-    r"(\d{6})",                            # HHMMSS
-    r"(\d{2})(\d{2})(\d{2})",              # HHMMSS alternative group capture
+    r"(\d{6})",                                # HHMMSS
+    r"(\d{2})(\d{2})(\d{2})",                  # HHMMSS alternative group capture
 ]
 
-def parse_datetime_from_filename(name):
-    # Try full datetime first
-    for pat in DATE_PATTERNS:
-        # print("File name:", name)
-        m = re.search(pat, name)
-        if m:
-            if len(m.groups()) == 6:
-                # date parts and time parts separated
-                g = m.groups()
-                if int(g[0]) > 31:  # YYYY first
-                    y,mth,d,h,mi,s = map(int, g)
-                else:  # DD first
-                    d,mth,y,h,mi,s = map(int, g)
-                return datetime(y,mth,d,h,mi,s)
-            elif len(m.groups()) == 1:
-                # YYYYMMDDHHMMSS
-                s = m.group(1)
-                return datetime.strptime(s, "%Y%m%d%H%M%S")
+def parse_datetime_from_filename(name: str) -> datetime | None:
+    date_match = None
+    date_info = None
 
-    # Try date only
+    # Find date first
     for pat in DATE_ONLY_PATTERNS:
         m = re.search(pat, name)
         if m:
             if len(m.groups()) == 3:
                 g = m.groups()
                 if int(g[0]) > 31:  # YYYY first
-                    y,mth,d = map(int, g)
+                    y, mth, d = map(int, g)
                 else:
-                    d,mth,y = map(int, g)
-                return datetime(y,mth,d)
+                    d, mth, y = map(int, g)
+                date_info = (y, mth, d)
             elif len(m.groups()) == 1:
                 s = m.group(1)
-                return datetime.strptime(s, "%Y%m%d")
+                y, mth, d = int(s[:4]), int(s[4:6]), int(s[6:8])
+                date_info = (y, mth, d)
+            if date_info:
+                date_match = m
+                break
 
-    return None
+    if not date_info:
+        return None
+
+    # Find time, but not overlapping with date
+    time_info = None
+    for pat in TIME_PATTERNS:
+        for m in re.finditer(pat, name):
+            # Check if this match does not overlap with date_match
+            if date_match:
+                date_span = date_match.span()
+                time_span = m.span()
+                # If time is completely outside date
+                if time_span[1] <= date_span[0] or time_span[0] >= date_span[1]:
+                    if len(m.groups()) == 3:
+                        h, mi, s = map(int, m.groups())
+                    elif len(m.groups()) == 1:
+                        s = m.group(1)
+                        h, mi, s = int(s[:2]), int(s[2:4]), int(s[4:6])
+                    time_info = (h, mi, s)
+                    break
+            else:
+                # Should not happen, but fallback
+                if len(m.groups()) == 3:
+                    h, mi, s = map(int, m.groups())
+                elif len(m.groups()) == 1:
+                    s = m.group(1)
+                    h, mi, s = int(s[:2]), int(s[2:4]), int(s[4:6])
+                time_info = (h, mi, s)
+                break
+        if time_info:
+            break
+
+    if date_info and time_info:
+        return datetime(date_info[0], date_info[1], date_info[2], time_info[0], time_info[1], time_info[2])
+    else:
+        return None
 
 def extract_earliest_metadata_datetime(filepath):
-    times = []
+    times: list[datetime] = []
 
     # Filesystem times
     try:
@@ -93,7 +109,10 @@ def extract_earliest_metadata_datetime(filepath):
                         tag = TAGS.get(tag_id, tag_id)
                         if tag in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
                             try:
-                                dt = datetime.strptime(val, "%Y:%m:%d %H:%M:%S")
+                                match = re.match(r"(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})", str(val))
+                                if match:
+                                    y, mth, d, h, mi, s = map(int, match.groups())
+                                    dt = datetime(y, mth, d, h, mi, s)
                                 times.append(dt)
                             except Exception:
                                 pass
@@ -137,7 +156,9 @@ async def update_metadata_async(fpath, dt):
     creationflags = 0
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW
-    proc = await asyncio.create_subprocess_exec(
+    # Determine if file is a video to add QuickTimeUTC=0
+    mime_type, _ = mimetypes.guess_type(fpath)
+    exiftool_args = [
         "exiftool", fpath,
         "-overwrite_original_in_place",
         f"-DateTimeOriginal={dt.strftime('%Y:%m:%d %H:%M:%S')}",
@@ -147,6 +168,12 @@ async def update_metadata_async(fpath, dt):
         f"-TrackModifyDate={dt.strftime('%Y:%m:%d %H:%M:%S')}",
         f"-MediaCreateDate={dt.strftime('%Y:%m:%d %H:%M:%S')}",
         f"-MediaModifyDate={dt.strftime('%Y:%m:%d %H:%M:%S')}",
+    ]
+    # if mime_type and mime_type.startswith("video"):
+    #     exiftool_args.insert(1, "-api")
+    #     exiftool_args.insert(2, "QuickTimeUTC=0")
+    proc = await asyncio.create_subprocess_exec(
+        *exiftool_args,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         creationflags=creationflags
@@ -235,7 +262,7 @@ class ProgressBarWindow:
         self.root.quit()
 
 
-def process_files(folder, progress_window):
+def process_files(folder, progress_window: ProgressBarWindow):
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -253,29 +280,22 @@ def process_files(folder, progress_window):
             return
         fpath = os.path.join(folder, fname)
         dt = parse_datetime_from_filename(fname)
-        if dt and (dt.hour == 0 and dt.minute == 0 and dt.second == 0):
+        if not dt:
             meta_dt = extract_earliest_metadata_datetime(fpath)
             if meta_dt:
-                dt = dt.replace(hour=meta_dt.hour, minute=meta_dt.minute, second=meta_dt.second)
-                base_prefix = "IMG" if is_image(fpath) else "VID" if is_video(fpath) else None
-                if base_prefix:
-                    new_name = f"{base_prefix}-{dt.strftime('%Y%m%d-%H%M%S')}{os.path.splitext(fname)[1].lower()}"
-                    new_path = os.path.join(folder, new_name)
-                    safe_rename(fpath, new_path)
-                    fpath = new_path
-                    fname = new_name
-        elif not dt:
-            meta_dt = extract_earliest_metadata_datetime(fpath)
-            if meta_dt:
-                base_prefix = "IMG" if is_image(fpath) else "VID" if is_video(fpath) else None
-                if base_prefix:
-                    new_name = f"{base_prefix}-{meta_dt.strftime('%Y%m%d-%H%M%S')}{os.path.splitext(fname)[1].lower()}"
-                    new_path = os.path.join(folder, new_name)
-                    safe_rename(fpath, new_path)
-                    fpath = new_path
-                    fname = new_name
                 dt = meta_dt
+                    
         if dt:
+            base_prefix = "IMG" if is_image(fpath) else "VID" if is_video(fpath) else None
+            if base_prefix:
+                ext = os.path.splitext(fname)[1].lower()
+                y, mth, d = dt.year, dt.month, dt.day
+                h, mi, s = dt.hour, dt.minute, dt.second
+                new_name = f"{base_prefix}-{y:04d}{mth:02d}{d:02d}-{h:02d}{mi:02d}{s:02d}{ext}"
+                new_path = os.path.join(folder, new_name)
+                safe_rename(fpath, new_path)
+                fpath = new_path
+                fname = new_name
             async with semaphore:
                 await update_metadata_async(fpath, dt)
         processed += 1
